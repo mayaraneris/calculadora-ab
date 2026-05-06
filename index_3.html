@@ -1,0 +1,935 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Calculadora de teste A/B</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;1,9..144,400&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap"
+    rel="stylesheet"
+  />
+
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <style>
+    body {
+      font-family: 'IBM Plex Sans', system-ui, sans-serif;
+      background: #f5f4ef;
+      color: #1c1917;
+    }
+    .font-serif { font-family: 'Fraunces', Georgia, serif; }
+    .font-mono { font-family: 'IBM Plex Mono', monospace; font-feature-settings: 'tnum' 1; }
+    input[type=number]::-webkit-inner-spin-button,
+    input[type=number]::-webkit-outer-spin-button { opacity: 0.3; }
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .animate-fade { animation: fadeUp 0.3s ease-out; }
+    details > summary { list-style: none; }
+    details > summary::-webkit-details-marker { display: none; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useMemo } = React;
+
+    // =====================================================
+    // ESTATÍSTICA
+    // z-test de duas proporções, 95% de confiança e 80% de power.
+    // =====================================================
+
+    function normCDF(z) {
+      const t = 1 / (1 + 0.2316419 * Math.abs(z));
+      const d = 0.3989422804 * Math.exp((-z * z) / 2);
+      const p = d * t * (0.319381530 + t * (-0.356563782 +
+        t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))));
+      return z > 0 ? 1 - p : p;
+    }
+
+    function sampleSize(p1, p2) {
+      if (!(p1 > 0 && p1 < 1 && p2 > 0 && p2 < 1) || p1 === p2) return null;
+      const za = 1.96;
+      const zb = 0.8416;
+      const num = Math.pow(za + zb, 2) * (p1 * (1 - p1) + p2 * (1 - p2));
+      const den = Math.pow(p2 - p1, 2);
+      return Math.ceil(num / den);
+    }
+
+    function analyze(nA, xA, nB, xB) {
+      if ([nA, xA, nB, xB].some(v => isNaN(v) || v < 0)) return null;
+      if (xA > nA || xB > nB || nA === 0 || nB === 0) return null;
+      const pA = xA / nA;
+      const pB = xB / nB;
+      const pPool = (xA + xB) / (nA + nB);
+      const se = Math.sqrt(pPool * (1 - pPool) * (1 / nA + 1 / nB));
+      const z = se === 0 ? 0 : (pB - pA) / se;
+      const pValue = 2 * (1 - normCDF(Math.abs(z)));
+      const liftRel = pA === 0 ? null : (pB - pA) / pA;
+      const significant = pValue < 0.05;
+      return {
+        pA, pB, diff: pB - pA, liftRel, z, pValue, significant,
+        winner: significant ? (pB > pA ? "B" : "A") : null
+      };
+    }
+
+    // =====================================================
+    // FORMATAÇÃO PT-BR
+    // =====================================================
+    const fmtPct = (v, d = 2) => v == null || isNaN(v) ? "—" : `${(v * 100).toFixed(d).replace('.', ',')}%`;
+    const fmtNum = (v) => v == null || isNaN(v) ? "—" : Math.round(v).toLocaleString("pt-BR");
+    const fmtDays = (d) => {
+      if (d == null || isNaN(d) || !isFinite(d)) return "—";
+      if (d < 1) return "menos de 1 dia";
+      if (d > 365) return `${Math.round(d)} dias (~${(d/365).toFixed(1).replace('.', ',')} anos)`;
+      if (d > 30) return `${Math.round(d)} dias (~${(d/30).toFixed(1).replace('.', ',')} meses)`;
+      return `${Math.round(d)} dias`;
+    };
+
+    // =====================================================
+    // EXPORT PRA IA
+    // Markdown estruturado com inputs, outputs e prompt sugerido.
+    // =====================================================
+    function exportPlanejamento(hipotese, p1, p2, volume, sample, days, cenarios) {
+      const liftRel = ((p2 - p1) / p1) * 100;
+      const lines = [
+        "# Planejamento de teste A/B",
+        "",
+      ];
+      if (hipotese && hipotese.trim()) {
+        lines.push("## Hipótese");
+        lines.push(hipotese.trim());
+        lines.push("");
+      }
+      lines.push(
+        "## Inputs",
+        `- Conversão atual (controle): ${fmtPct(p1)}`,
+        `- Conversão alvo (versão B): ${fmtPct(p2)}`,
+        `- Lift relativo equivalente: +${liftRel.toFixed(1).replace('.', ',')}%`,
+        `- Volume diário: ${fmtNum(volume)} pessoas/dia (total entre as duas versões)`,
+        "",
+        "## Resultado",
+        sample ? `- Amostra mínima por variante: ${fmtNum(sample.nPerVariant)} pessoas` : "- Sem resultado calculável",
+        sample ? `- Total no teste: ${fmtNum(sample.total)} pessoas` : "",
+        `- Tempo estimado de validação: ${fmtDays(days)}`,
+        "- Parâmetros estatísticos: 95% de relevância, 80% de power, split 50/50",
+        "",
+      );
+      if (cenarios && cenarios.length > 0) {
+        lines.push("## Cenários alternativos");
+        lines.push("| Lift relativo | Conversão B | Total | Tempo |");
+        lines.push("|---|---|---|---|");
+        cenarios.forEach(c => {
+          lines.push(`| +${c.m}% | ${fmtPct(c.p2c)} | ${fmtNum(c.total)} | ${fmtDays(c.days)} |`);
+        });
+        lines.push("");
+      }
+      lines.push(
+        "## Pergunta para a IA",
+        "Atue como um especialista em testes A/B com experiência em produto digital.",
+        "Dado o planejamento acima, me ajude a:",
+        "1. Avaliar se o lift esperado é realista para a natureza da mudança descrita na hipótese",
+        "2. Sugerir guard rails (métricas de cuidado) para acompanhar em paralelo, considerando categorias: receita (ticket médio, ARPU), técnicas (page load, taxa de erro), experiência (bounce rate, volume de tickets) e canibalização",
+        "3. Identificar riscos do teste — em especial cookie churn, sazonalidade e efeito novidade se o tempo for longo",
+        "4. Propor alternativas se o tempo de validação for inviável (microconversão, aumentar tráfego, flexibilizar parâmetros)",
+      );
+      return lines.join("\n");
+    }
+
+    function exportAnalise(nA, xA, nB, xB, r, aprendizado) {
+      if (!r) return "";
+      const lines = [
+        "# Análise de teste A/B",
+        "",
+        "## Inputs",
+        `- Versão A (controle): ${fmtNum(nA)} pessoas, ${fmtNum(xA)} conversões → ${fmtPct(r.pA, 3)}`,
+        `- Versão B (novo): ${fmtNum(nB)} pessoas, ${fmtNum(xB)} conversões → ${fmtPct(r.pB, 3)}`,
+        "",
+        "## Resultado estatístico",
+        `- Lift relativo (B vs A): ${r.liftRel != null ? (r.liftRel >= 0 ? "+" : "") + (r.liftRel * 100).toFixed(2).replace('.', ',') + '%' : '—'}`,
+        `- Diferença absoluta: ${(r.diff * 100).toFixed(2).replace('.', ',')} pp`,
+        `- P-valor: ${r.pValue.toFixed(4).replace('.', ',')}`,
+        `- Z-statistic: ${r.z.toFixed(3).replace('.', ',')}`,
+        `- Significância (p < 0,05): ${r.significant ? 'Sim' : 'Não'}`,
+        `- Vencedor estatístico: ${r.winner || 'nenhum (empate técnico)'}`,
+        "",
+      ];
+      if (aprendizado && aprendizado.trim()) {
+        lines.push("## Aprendizado registrado pelo time");
+        lines.push(aprendizado.trim());
+        lines.push("");
+      }
+      lines.push(
+        "## Pergunta para a IA",
+        "Atue como um especialista em testes A/B com experiência em produto digital.",
+        "Dado o resultado acima, me ajude a:",
+        "1. Interpretar o que esse resultado significa do ponto de vista de produto",
+        "2. Avaliar se devo fazer rollout, parar o teste ou rodar mais tempo",
+        "3. Listar guard rails que devo conferir antes de qualquer rollout",
+        "4. Extrair aprendizado mesmo se o teste não foi conclusivo, e propor a próxima hipótese a testar",
+      );
+      return lines.join("\n");
+    }
+
+    // =====================================================
+    // COMPONENTES BASE
+    // =====================================================
+    function Field({ label, sublabel, children, hint }) {
+      return (
+        <label className="block">
+          <div className="text-sm text-stone-700 mb-1.5 font-medium">
+            {label}
+            {sublabel && (
+              <span className="ml-1.5 text-xs text-stone-500 font-normal italic">
+                {sublabel}
+              </span>
+            )}
+          </div>
+          {children}
+          {hint && <div className="text-xs text-stone-500 mt-1.5 italic">{hint}</div>}
+        </label>
+      );
+    }
+
+    function NumIn({ value, onChange, suffix, step = 1, big = false }) {
+      const numValue = parseFloat(value);
+      // pra inputs grandes (volume, visitantes, conversões), confirma o número formatado
+      const showFormatted = big && !isNaN(numValue) && numValue >= 1000;
+      return (
+        <>
+          <div className="relative">
+            <input
+              type="number"
+              value={value}
+              onChange={e => onChange(e.target.value)}
+              step={step}
+              className="w-full bg-white border border-stone-300 rounded px-3 py-2.5 font-mono text-lg text-stone-900 focus:border-stone-900 focus:outline-none transition-colors"
+            />
+            {suffix && (
+              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-stone-500 font-mono text-sm pointer-events-none">
+                {suffix}
+              </span>
+            )}
+          </div>
+          {showFormatted && (
+            <div className="text-xs text-stone-500 font-mono mt-1">
+              = {numValue.toLocaleString('pt-BR')}
+            </div>
+          )}
+        </>
+      );
+    }
+
+    function CopyButton({ getContent, label = "Copiar pra Claude / ChatGPT" }) {
+      const [copied, setCopied] = useState(false);
+      const onClick = async () => {
+        try {
+          await navigator.clipboard.writeText(getContent());
+          setCopied(true);
+          setTimeout(() => setCopied(false), 2000);
+        } catch (e) {
+          alert("Não consegui copiar automaticamente. Tente de novo.");
+        }
+      };
+      return (
+        <button
+          onClick={onClick}
+          className="inline-flex items-center gap-2 px-4 py-2 border border-stone-900 text-stone-900 hover:bg-stone-900 hover:text-stone-50 transition-colors text-sm font-medium rounded"
+        >
+          {copied ? (
+            <>
+              <span>Copiado</span>
+              <span className="font-mono">✓</span>
+            </>
+          ) : (
+            <>
+              <span>{label}</span>
+              <span className="font-mono">→</span>
+            </>
+          )}
+        </button>
+      );
+    }
+
+    // =====================================================
+    // TIMELINE — passo-a-passo do fluxo do teste A/B
+    // =====================================================
+    function Timeline() {
+      const Step = ({ n, title, sub, active }) => (
+        <div className={`flex-1 ${active ? "" : "opacity-50"}`}>
+          <div className="flex items-center gap-2 mb-1">
+            <span className={`font-mono text-xs w-6 h-6 rounded-full flex items-center justify-center ${
+              active ? "bg-stone-900 text-stone-50" : "bg-stone-300 text-stone-700"
+            }`}>{n}</span>
+            <span className="font-medium text-sm text-stone-900">{title}</span>
+          </div>
+          <div className="text-xs text-stone-600 ml-8">{sub}</div>
+        </div>
+      );
+      const Sep = () => (
+        <div className="flex-shrink-0 w-8 h-px bg-stone-300 mt-3 hidden sm:block" />
+      );
+      return (
+        <div className="border-y border-stone-300 py-4 mb-10">
+          <div className="text-[10px] uppercase tracking-[0.2em] text-stone-500 mb-3 font-medium">
+            O fluxo de um teste A/B
+          </div>
+          <div className="flex flex-col sm:flex-row gap-4 sm:gap-0 sm:items-start">
+            <Step n="1" title="Antes de rodar" sub="planejar a amostra (na calculadora)" active={true} />
+            <Sep />
+            <Step n="2" title="Enquanto roda" sub="acompanhar sem peeking (vida real)" active={false} />
+            <Sep />
+            <Step n="3" title="Depois que rodou" sub="analisar quem ganhou (na calculadora)" active={true} />
+          </div>
+        </div>
+      );
+    }
+
+    // =====================================================
+    // SEÇÃO EDUCATIVA — fundamentos pra leigos
+    // =====================================================
+    function Fundamentos() {
+      const [open, setOpen] = useState(false);
+      return (
+        <div className="bg-white border border-stone-300 rounded-lg p-6 sm:p-8 shadow-sm mb-6">
+          <button
+            onClick={() => setOpen(!open)}
+            className="w-full text-left flex items-start justify-between gap-4"
+          >
+            <div>
+              <div className="font-serif italic text-2xl text-stone-900">
+                Primeira vez fazendo teste A/B?
+              </div>
+              <div className="text-sm text-stone-600 mt-1">
+                Os fundamentos antes de mexer nos números
+              </div>
+            </div>
+            <span className="font-mono text-2xl text-stone-500 flex-shrink-0">
+              {open ? "−" : "+"}
+            </span>
+          </button>
+          {open && (
+            <div className="mt-6 space-y-4 text-stone-800 leading-relaxed animate-fade">
+              <div>
+                <strong className="text-stone-900">Hipótese.</strong> Toda mudança que
+                você vai testar começa com uma hipótese: "se eu mudar X, espero que aconteça Y,
+                porque Z". Anote ela <em>antes</em> de rodar — vai te ajudar a interpretar o
+                resultado depois.
+              </div>
+              <div>
+                <strong className="text-stone-900">KPI primário.</strong> A métrica que
+                decide se a versão B ganhou. <em>Sempre uma taxa</em> (conversão %), nunca
+                volume bruto: taxa não depende do tamanho da amostra, volume sim. Exemplo bom:
+                % de visitantes que viram lead. Exemplo ruim: número de leads gerados.
+              </div>
+              <div>
+                <strong className="text-stone-900">Guard rails (métricas de cuidado).</strong>{" "}
+                Métricas secundárias que você acompanha em paralelo pra garantir que não tá
+                estragando o que já funciona. Se a conversão sobe mas alguma dessas piora muito,
+                o teste pode não valer. Categorias úteis pra cobrir:
+                <ul className="mt-2 ml-4 space-y-1 list-disc text-sm">
+                  <li><strong>Receita / qualidade:</strong> ticket médio, receita por usuário (ARPU), sinistralidade no caso de seguro</li>
+                  <li><strong>Técnicas:</strong> tempo de carregamento da página, taxa de erro, crashes</li>
+                  <li><strong>Experiência:</strong> bounce rate, taxa de saída, volume de tickets de suporte</li>
+                  <li><strong>Canibalização:</strong> se você deu destaque pra ação X, alguma ação Y importante caiu de cliques?</li>
+                </ul>
+              </div>
+              <div>
+                <strong className="text-stone-900">Etapa do funil importa.</strong> Testes em
+                etapas com mais volume e maior conversão padrão validam mais rápido. Ir de 50%
+                pra 55% é mais fácil de validar do que ir de 1% pra 1,1% — mesmo sendo o mesmo
+                lift relativo.
+              </div>
+              <div>
+                <strong className="text-stone-900">Mudança drástica &gt; sutil.</strong>{" "}
+                Quanto mais visível a mudança, mais rápido o teste valida — pra bem ou pra mal.
+                Mexer no botão principal acima da dobra valida mais rápido do que ajustar uma
+                microcópia no rodapé.
+              </div>
+              <div>
+                <strong className="text-stone-900">Não pare o teste no meio.</strong> O hábito
+                de ficar olhando o resultado parcial e parar quando "deu bom" tem nome:{" "}
+                <em>peeking</em>. É o jeito mais rápido de tomar decisão errada, porque o
+                p-valor parcial oscila muito. Defina o tamanho da amostra antes (passo 1) e
+                só analise quando bater esse número.
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // =====================================================
+    // BLOCO 1 — PLANEJAR
+    // =====================================================
+    function BlocoPlanejamento() {
+      const [hipotese, setHipotese] = useState(""); // descrição da mudança
+      const [base, setBase] = useState("5");        // % conversão atual
+      const [meta, setMeta] = useState("5.5");      // % conversão alvo (clareza > "lift")
+      const [volume, setVolume] = useState("1000"); // pessoas/dia
+
+      const p1 = parseFloat(base) / 100;
+      const p2 = parseFloat(meta) / 100;
+      const v = parseFloat(volume);
+      const liftRel = (p1 > 0 && p2 > 0) ? ((p2 - p1) / p1) * 100 : null;
+
+      const r = useMemo(() => {
+        const n = sampleSize(p1, p2);
+        if (!n) return null;
+        const total = n * 2;
+        const days = (v > 0) ? total / v : null;
+        return { nPerVariant: n, total, days };
+      }, [p1, p2, v]);
+
+      const cenarios = useMemo(() => {
+        if (!(p1 > 0 && p1 < 1) || !(v > 0)) return [];
+        return [5, 10, 20, 30, 50].map(m => {
+          const p2c = p1 * (1 + m/100);
+          if (p2c >= 1) return { m, p2c, days: null, total: null };
+          const n = sampleSize(p1, p2c);
+          if (!n) return { m, p2c, days: null, total: null };
+          return { m, p2c, total: n*2, days: (n*2)/v };
+        });
+      }, [p1, v]);
+
+      let tone = "neutral", verdict = null;
+      if (r?.days != null) {
+        if (r.days <= 21) {
+          tone = "good";
+          verdict = "Tempo razoável. Pode rodar tranquilo.";
+        } else if (r.days <= 60) {
+          tone = "warn";
+          verdict = "Tempo apertado, mas ainda viável. Considere uma mudança mais drástica (lift maior) ou rodar em uma etapa do funil com mais volume.";
+        } else {
+          tone = "bad";
+          verdict = "Inviável nesse formato. Suas opções: (1) testar uma mudança mais drástica que cause um lift maior; (2) mover o teste pra uma etapa do funil com mais volume; (3) trocar o KPI por um mais raso (o que o Fred chama de KPI intermediário — ex: clique no botão em vez de venda final).";
+        }
+      }
+
+      // Aviso adicional pra testes longos: cookie churn, sazonalidade, novidade
+      const avisoTestelongo = (r?.days != null && r.days > 30);
+
+      // Aviso de lift exagerado: lifts > 10% só são realistas pra mudanças estruturais
+      const liftExagerado = (liftRel != null && liftRel > 10 && isFinite(liftRel));
+
+      const verdictColors = {
+        good: "border-emerald-700 bg-emerald-50 text-emerald-900",
+        warn: "border-amber-600 bg-amber-50 text-amber-900",
+        bad:  "border-rose-700 bg-rose-50 text-rose-900",
+        neutral: "border-stone-400 bg-stone-50 text-stone-800"
+      };
+
+      return (
+        <section className="bg-white border border-stone-300 rounded-lg p-6 sm:p-8 shadow-sm">
+          <div className="flex items-baseline gap-3 mb-1">
+            <span className="font-mono text-xs text-stone-500 font-semibold">PASSO 1 · PLANEJAR</span>
+            <span className="h-px flex-1 bg-stone-300 mt-2" />
+          </div>
+          <h2 className="font-serif text-3xl sm:text-4xl text-stone-900 leading-tight mb-2">
+            Vai dar tempo de <em className="italic">rodar esse teste?</em>
+          </h2>
+          <p className="text-stone-700 mb-8 leading-relaxed">
+            Antes de torrar tempo num teste que vai durar 10.000 dias, descubra
+            quanto tempo ele vai precisar pra dar resultado confiável{" "}
+            <span className="text-stone-500 italic">
+              (ou seja: bater a amostra mínima pra detectar o efeito com 95% de relevância e 80% de power)
+            </span>.
+          </p>
+
+          <div className="mb-6">
+            <Field
+              label="Sua hipótese"
+              sublabel="(opcional, mas recomendado)"
+              hint='use o formato: "se eu mudar X, espero Y, porque Z"'
+            >
+              <textarea
+                value={hipotese}
+                onChange={e => setHipotese(e.target.value)}
+                placeholder="Se eu destacar o botão acima da dobra, espero aumentar a conversão em 10%, porque mais gente vai ver o CTA"
+                rows={2}
+                className="w-full bg-white border border-stone-300 rounded px-3 py-2.5 text-sm text-stone-900 focus:border-stone-900 focus:outline-none transition-colors resize-none leading-relaxed"
+              />
+            </Field>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-5 mb-8">
+            <Field
+              label="Quantos % convertem hoje?"
+              sublabel="(taxa de conversão base)"
+              hint="ex: 5% das pessoas que veem essa página convertem"
+            >
+              <NumIn value={base} onChange={setBase} suffix="%" step={0.1} />
+            </Field>
+            <Field
+              label="Qual conversão você quer atingir?"
+              sublabel="(meta com a versão B)"
+              hint={
+                liftRel != null && !isNaN(liftRel) && isFinite(liftRel)
+                  ? `equivale a ${liftRel >= 0 ? '+' : ''}${liftRel.toFixed(1).replace('.', ',')}% de lift relativo`
+                  : "a taxa que você quer ver na nova versão"
+              }
+            >
+              <NumIn value={meta} onChange={setMeta} suffix="%" step={0.1} />
+              {liftExagerado && (
+                <div className="text-xs text-amber-800 mt-2 leading-relaxed bg-amber-50 border border-amber-200 rounded px-2.5 py-2">
+                  <strong>Lift ambicioso.</strong> Lifts de dois dígitos costumam só
+                  acontecer em mudanças estruturais (remover etapa, redesign, novo método de pagamento).
+                  Mudanças cosméticas (cor de botão, copy, microajuste) tendem a 1–5%.
+                </div>
+              )}
+            </Field>
+            <Field
+              label="Quantas pessoas por dia?"
+              sublabel="(volume diário do funil)"
+              hint="total entre as duas versões"
+            >
+              <NumIn value={volume} onChange={setVolume} suffix="/dia" step={50} big />
+            </Field>
+          </div>
+
+          {r && (
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-6 animate-fade">
+              <div className="border border-stone-300 rounded p-4 bg-stone-50">
+                <div className="text-xs uppercase tracking-wider text-stone-600 mb-1">
+                  Pessoas em cada versão
+                </div>
+                <div className="font-mono text-2xl text-stone-900">
+                  {fmtNum(r.nPerVariant)}
+                </div>
+              </div>
+              <div className="border border-stone-300 rounded p-4 bg-stone-50">
+                <div className="text-xs uppercase tracking-wider text-stone-600 mb-1">
+                  Total no teste
+                </div>
+                <div className="font-mono text-2xl text-stone-900">
+                  {fmtNum(r.total)}
+                </div>
+              </div>
+              <div className={`border rounded p-4 ${verdictColors[tone]}`}>
+                <div className="text-xs uppercase tracking-wider mb-1 opacity-80">
+                  Tempo estimado
+                </div>
+                <div className="font-mono text-2xl">{fmtDays(r.days)}</div>
+              </div>
+            </div>
+          )}
+
+          {verdict && (
+            <div className={`border-l-4 p-4 mb-6 animate-fade ${verdictColors[tone]}`}>
+              <div className="text-xs uppercase tracking-wider font-semibold mb-1">
+                Recomendação
+              </div>
+              <div className="text-sm leading-relaxed">{verdict}</div>
+            </div>
+          )}
+
+          {avisoTestelongo && (
+            <div className="border border-stone-400 bg-stone-50 rounded p-4 mb-6 animate-fade">
+              <div className="text-xs uppercase tracking-wider font-semibold mb-2 text-stone-800">
+                Atenção a testes longos (&gt; 30 dias)
+              </div>
+              <div className="text-sm leading-relaxed text-stone-700 space-y-2">
+                <p>
+                  Testes que duram mais de um mês têm três problemas estruturais que podem
+                  contaminar o resultado:
+                </p>
+                <ul className="ml-4 space-y-1 list-disc">
+                  <li>
+                    <strong>Cookie churn:</strong> usuários trocam de celular pra desktop,
+                    limpam cookies, usam aba anônima — e acabam vendo as duas versões. A
+                    randomização vaza.
+                  </li>
+                  <li>
+                    <strong>Sazonalidade:</strong> 30+ dias engloba viradas de mês, dias de
+                    pagamento, feriados. Comportamento no dia 5 não é igual ao do dia 25.
+                  </li>
+                  <li>
+                    <strong>Efeito novidade:</strong> nos primeiros dias, usuários
+                    interagem mais com a versão B só porque é diferente. Depois cai.
+                  </li>
+                </ul>
+                <p className="italic">
+                  Se puder, encurte o teste antes de lançar: mude de KPI primário pra um
+                  intermediário, mire em uma etapa com mais volume, ou aceite uma confiança
+                  de 90% em troca de um teste mais rápido.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {cenarios.length > 0 && (
+            <details className="mt-6">
+              <summary className="cursor-pointer text-sm text-stone-700 font-medium hover:text-stone-900 select-none">
+                + E se a melhoria fosse maior ou menor? Ver cenários
+              </summary>
+              <div className="mt-3 border border-stone-300 rounded overflow-hidden">
+                <table className="w-full text-sm">
+                  <thead className="bg-stone-100">
+                    <tr>
+                      <th className="text-left py-2 px-3 text-xs uppercase tracking-wider text-stone-700">Lift relativo</th>
+                      <th className="text-left py-2 px-3 text-xs uppercase tracking-wider text-stone-700">Vai de → pra</th>
+                      <th className="text-right py-2 px-3 text-xs uppercase tracking-wider text-stone-700">Total de pessoas</th>
+                      <th className="text-right py-2 px-3 text-xs uppercase tracking-wider text-stone-700">Tempo</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {cenarios.map(c => {
+                      const cor = c.days == null ? "text-stone-400"
+                        : c.days <= 21 ? "text-emerald-700"
+                        : c.days <= 60 ? "text-amber-700"
+                        : "text-rose-700";
+                      return (
+                        <tr key={c.m} className="border-t border-stone-200">
+                          <td className="py-2 px-3 font-mono">+{c.m}%</td>
+                          <td className="py-2 px-3 font-mono text-stone-700">
+                            {fmtPct(p1)} → {fmtPct(c.p2c)}
+                          </td>
+                          <td className="py-2 px-3 font-mono text-right text-stone-700">{fmtNum(c.total)}</td>
+                          <td className={`py-2 px-3 font-mono text-right ${cor}`}>{fmtDays(c.days)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+                <div className="text-xs text-stone-600 p-3 bg-stone-50 italic leading-relaxed">
+                  Quanto mais drástica a mudança, mais rápido o teste valida —
+                  pra bem ou pra mal. Mudancinha pequena exige amostra gigante.
+                </div>
+              </div>
+            </details>
+          )}
+
+          {r && (
+            <div className="mt-6 pt-6 border-t border-stone-200 flex flex-col sm:flex-row sm:items-center gap-3">
+              <CopyButton
+                getContent={() => exportPlanejamento(hipotese, p1, p2, v, r, r.days, cenarios)}
+                label="Copiar planejamento pra IA"
+              />
+              <span className="text-xs text-stone-500 italic">
+                cola no Claude / ChatGPT pra uma análise mais aprofundada do plano
+              </span>
+            </div>
+          )}
+        </section>
+      );
+    }
+
+    // =====================================================
+    // BLOCO 2 — ANALISAR
+    // =====================================================
+    function BlocoAnalise() {
+      const [nA, setNA] = useState("5000");
+      const [xA, setXA] = useState("250");
+      const [nB, setNB] = useState("5000");
+      const [xB, setXB] = useState("290");
+      const [aprendizado, setAprendizado] = useState(""); // reflexão do time depois do teste
+
+      const naN = parseFloat(nA), xaN = parseFloat(xA);
+      const nbN = parseFloat(nB), xbN = parseFloat(xB);
+
+      const r = useMemo(() => analyze(naN, xaN, nbN, xbN), [naN, xaN, nbN, xbN]);
+
+      const chanceSorte = r ? Math.min(r.pValue * 100, 100) : null;
+
+      let toneCard = "neutral", titulo = "", recomendacao = "";
+      if (r) {
+        if (r.significant && r.winner === "B") {
+          toneCard = "good";
+          titulo = "Versão B ganhou";
+          recomendacao = `B converteu ${(r.liftRel * 100).toFixed(1).replace('.', ',')}% melhor que A. A chance disso ser por acaso é de apenas ${chanceSorte.toFixed(1).replace('.', ',')}% — pode subir B pra todo mundo (rollout). Antes de bater o martelo, confere as métricas de cuidado (guard rails) que você definiu na hipótese: ticket médio, custo de aquisição, sinistro.`;
+        } else if (r.significant && r.winner === "A") {
+          toneCard = "bad";
+          titulo = "Versão A ganhou (a B piorou)";
+          recomendacao = `A mudança que você testou em B piorou a conversão em ${Math.abs(r.liftRel * 100).toFixed(1).replace('.', ',')}%. Não suba B. Documenta o aprendizado — teste perdedor também é informação.`;
+        } else {
+          toneCard = "warn";
+          titulo = "Empate técnico";
+          recomendacao = `Os dois lados se comportaram parecido. A diferença que apareceu (${r.liftRel != null ? (r.liftRel * 100).toFixed(1).replace('.', ',') + '%' : '—'}) tem ${chanceSorte.toFixed(0)}% de chance de ser por acaso, então não dá pra confiar. Opções: rodar mais tempo (se ainda estiver dentro do prazo planejado), ou aceitar que a mudança não moveu o ponteiro e partir pra próxima hipótese.`;
+        }
+      }
+
+      const verdictColors = {
+        good: "border-emerald-700 bg-emerald-50",
+        warn: "border-amber-600 bg-amber-50",
+        bad: "border-rose-700 bg-rose-50",
+        neutral: "border-stone-400 bg-stone-50"
+      };
+
+      return (
+        <section className="bg-white border border-stone-300 rounded-lg p-6 sm:p-8 shadow-sm">
+          <div className="flex items-baseline gap-3 mb-1">
+            <span className="font-mono text-xs text-stone-500 font-semibold">PASSO 3 · ANALISAR</span>
+            <span className="h-px flex-1 bg-stone-300 mt-2" />
+          </div>
+          <h2 className="font-serif text-3xl sm:text-4xl text-stone-900 leading-tight mb-2">
+            Quem <em className="italic">ganhou?</em>
+          </h2>
+          <p className="text-stone-700 mb-8 leading-relaxed">
+            Coloque os números das duas versões e veja se a diferença que apareceu
+            é confiável ou se foi sorte do acaso{" "}
+            <span className="text-stone-500 italic">
+              (z-test de duas proporções, p-valor &lt; 0,05 = significância estatística)
+            </span>.
+          </p>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+            <div className="border border-stone-300 rounded p-5 bg-stone-50">
+              <h3 className="font-serif italic text-xl text-stone-900 mb-4">
+                Versão A · controle
+              </h3>
+              <div className="space-y-4">
+                <Field label="Quantas pessoas viram">
+                  <NumIn value={nA} onChange={setNA} step={100} big />
+                </Field>
+                <Field label="Quantas converteram">
+                  <NumIn value={xA} onChange={setXA} step={10} big />
+                </Field>
+                <div className="pt-2 border-t border-stone-300">
+                  <div className="text-xs uppercase tracking-wider text-stone-600 mb-1">
+                    Conversão
+                  </div>
+                  <div className="font-mono text-2xl text-stone-900">
+                    {naN > 0 ? fmtPct(xaN / naN) : "—"}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="border-2 border-stone-900 rounded p-5 bg-white">
+              <h3 className="font-serif italic text-xl text-stone-900 mb-4">
+                Versão B · novo
+              </h3>
+              <div className="space-y-4">
+                <Field label="Quantas pessoas viram">
+                  <NumIn value={nB} onChange={setNB} step={100} big />
+                </Field>
+                <Field label="Quantas converteram">
+                  <NumIn value={xB} onChange={setXB} step={10} big />
+                </Field>
+                <div className="pt-2 border-t border-stone-300">
+                  <div className="text-xs uppercase tracking-wider text-stone-600 mb-1">
+                    Conversão
+                  </div>
+                  <div className="font-mono text-2xl text-stone-900">
+                    {nbN > 0 ? fmtPct(xbN / nbN) : "—"}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {r && (
+            <div className={`border-2 rounded-lg p-6 ${verdictColors[toneCard]} animate-fade`}>
+              <div className="font-serif text-3xl sm:text-4xl mb-3 text-stone-900 leading-tight">
+                {titulo}
+              </div>
+              <p className="text-stone-800 leading-relaxed mb-4">
+                {recomendacao}
+              </p>
+
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mt-4">
+                <div className="bg-white/60 rounded p-3 border border-stone-200">
+                  <div className="text-xs uppercase tracking-wider text-stone-600 mb-0.5">
+                    B vs. A <span className="italic">(lift)</span>
+                  </div>
+                  <div className="font-mono text-lg text-stone-900">
+                    {r.liftRel == null ? "—" : `${r.liftRel >= 0 ? "+" : ""}${(r.liftRel * 100).toFixed(1).replace('.', ',')}%`}
+                  </div>
+                </div>
+                <div className="bg-white/60 rounded p-3 border border-stone-200">
+                  <div className="text-xs uppercase tracking-wider text-stone-600 mb-0.5">
+                    Chance de ser sorte <span className="italic">(p-valor)</span>
+                  </div>
+                  <div className="font-mono text-lg text-stone-900">
+                    {chanceSorte == null ? "—" : `${chanceSorte.toFixed(1).replace('.', ',')}%`}
+                  </div>
+                </div>
+                <div className="bg-white/60 rounded p-3 border border-stone-200">
+                  <div className="text-xs uppercase tracking-wider text-stone-600 mb-0.5">
+                    Confiável? <span className="italic">(p &lt; 0,05)</span>
+                  </div>
+                  <div className="font-mono text-lg text-stone-900">
+                    {r.significant ? "Sim" : "Não"}
+                  </div>
+                </div>
+              </div>
+
+              <details className="mt-5">
+                <summary className="cursor-pointer text-xs text-stone-700 font-medium hover:text-stone-900 select-none uppercase tracking-wider">
+                  + Ver detalhes técnicos
+                </summary>
+                <div className="mt-3 grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs font-mono">
+                  <div className="bg-white/40 rounded p-2 border border-stone-200">
+                    <div className="text-stone-600">Conv. A</div>
+                    <div className="text-stone-900 text-base">{fmtPct(r.pA, 3)}</div>
+                  </div>
+                  <div className="bg-white/40 rounded p-2 border border-stone-200">
+                    <div className="text-stone-600">Conv. B</div>
+                    <div className="text-stone-900 text-base">{fmtPct(r.pB, 3)}</div>
+                  </div>
+                  <div className="bg-white/40 rounded p-2 border border-stone-200">
+                    <div className="text-stone-600">Z</div>
+                    <div className="text-stone-900 text-base">{r.z.toFixed(3).replace('.', ',')}</div>
+                  </div>
+                  <div className="bg-white/40 rounded p-2 border border-stone-200">
+                    <div className="text-stone-600">P-valor</div>
+                    <div className="text-stone-900 text-base">{r.pValue.toFixed(4).replace('.', ',')}</div>
+                  </div>
+                </div>
+              </details>
+            </div>
+          )}
+
+          {r && (
+            <div className="mt-6">
+              <Field
+                label="O que você aprendeu com esse teste?"
+                sublabel="(opcional, mas recomendado — vale documentar mesmo se foi inconclusivo)"
+                hint="ex: a hipótese se confirmou, mas o lift foi menor do que esperávamos. Próxima ideia: testar uma versão ainda mais drástica do botão"
+              >
+                <textarea
+                  value={aprendizado}
+                  onChange={e => setAprendizado(e.target.value)}
+                  placeholder="Conta o que ficou claro, o que surpreendeu, e qual a próxima hipótese que você quer testar"
+                  rows={3}
+                  className="w-full bg-white border border-stone-300 rounded px-3 py-2.5 text-sm text-stone-900 focus:border-stone-900 focus:outline-none transition-colors resize-none leading-relaxed"
+                />
+              </Field>
+            </div>
+          )}
+
+          {r && (
+            <div className="mt-6 pt-6 border-t border-stone-200 flex flex-col sm:flex-row sm:items-center gap-3">
+              <CopyButton
+                getContent={() => exportAnalise(naN, xaN, nbN, xbN, r, aprendizado)}
+                label="Copiar análise pra IA"
+              />
+              <span className="text-xs text-stone-500 italic">
+                cola no Claude / ChatGPT pra discutir o resultado e próximos passos
+              </span>
+            </div>
+          )}
+        </section>
+      );
+    }
+
+    // =====================================================
+    // PRIVACIDADE & SEGURANÇA
+    // =====================================================
+    function Seguranca() {
+      const [open, setOpen] = useState(false);
+      return (
+        <div className="bg-white border border-stone-300 rounded-lg p-6 sm:p-8 shadow-sm mt-6">
+          <button
+            onClick={() => setOpen(!open)}
+            className="w-full text-left flex items-start justify-between gap-4"
+          >
+            <div>
+              <div className="font-serif italic text-xl text-stone-900">
+                Privacidade & segurança
+              </div>
+              <div className="text-sm text-stone-600 mt-1">
+                Como os dados que você digita aqui são tratados
+              </div>
+            </div>
+            <span className="font-mono text-2xl text-stone-500 flex-shrink-0">
+              {open ? "−" : "+"}
+            </span>
+          </button>
+          {open && (
+            <div className="mt-6 space-y-4 text-stone-800 leading-relaxed text-sm animate-fade">
+              <div>
+                <strong className="text-stone-900">A calculadora roda 100% no seu navegador.</strong>{" "}
+                Tudo que você digita fica no seu computador. Nenhum número é enviado pra
+                servidor nenhum. Pode usar offline depois de carregar a primeira vez.
+              </div>
+              <div>
+                <strong className="text-stone-900">Não tem persistência.</strong> Fechou a
+                aba, os dados se vão. Isso é proposital — privacidade por padrão. Se quiser
+                salvar um resultado, use o botão "Copiar pra IA" e cole onde fizer sentido.
+              </div>
+              <div>
+                <strong className="text-stone-900">Cuidado ao copiar pra IA externa.</strong>{" "}
+                Quando você cola dados de teste no Claude.ai grátis ou ChatGPT grátis, esses
+                dados podem ser usados pra treinamento dos modelos. Pra dados internos da
+                Pier, prefira: (1) usar só números agregados — visitantes, conversões, taxas
+                — nunca CPF, e-mail ou qualquer identificador de cliente; (2) se a Pier tiver
+                contrato corporativo com Anthropic ou OpenAI, usar essas contas que têm
+                cláusula de não-treinamento; (3) na dúvida, anonimizar antes de colar.
+              </div>
+              <div>
+                <strong className="text-stone-900">Dependências externas.</strong> A
+                calculadora usa Tailwind, React e fontes do Google via CDN público. Pra uma
+                ferramenta interna definitiva, vale considerar self-hostar essas
+                dependências (baixar e servir do próprio domínio) pra evitar dependência de
+                terceiros e ataques de supply chain.
+              </div>
+              <div>
+                <strong className="text-stone-900">Hospedagem.</strong> Se for compartilhar
+                com o time via GitHub Pages ou Vercel público, qualquer pessoa com a URL
+                acessa. Não tem nada confidencial no código em si, mas se quiser controlar
+                acesso, hospede num endpoint atrás de SSO da Pier, ou em pasta interna.
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // =====================================================
+    // APP
+    // =====================================================
+    function App() {
+      return (
+        <div className="min-h-screen py-10 px-4 sm:px-6">
+          <div className="max-w-3xl mx-auto">
+            <header className="mb-8">
+              <div className="text-xs uppercase tracking-[0.2em] text-stone-600 mb-3 font-medium">
+                Ferramenta interna · Aquisição
+              </div>
+              <h1 className="font-serif text-5xl sm:text-6xl text-stone-900 leading-[0.95] mb-4">
+                Calculadora de <em className="italic">teste A/B</em>
+              </h1>
+              <p className="text-stone-700 text-lg leading-relaxed max-w-2xl">
+                Pra você saber se vale rodar o teste, e o que fazer com o resultado
+                quando ele aparecer. Sem precisar abrir o ChatGPT.
+              </p>
+            </header>
+
+            <Timeline />
+
+            <Fundamentos />
+
+            <div className="space-y-6">
+              <BlocoPlanejamento />
+              <BlocoAnalise />
+            </div>
+
+            <Seguranca />
+
+            <footer className="mt-10 text-sm text-stone-600 leading-relaxed border-t border-stone-300 pt-6">
+              <p>
+                <strong className="text-stone-800">Como funciona por baixo:</strong>{" "}
+                z-test de duas proporções com aproximação normal — a mesma matemática que
+                Optimizely, VWO e qualquer ferramenta séria de A/B test usa. Defaults:
+                95% de relevância estatística, 80% de power, split 50/50. Pra splits
+                desiguais ou A/B/C, a matemática muda (peça uma versão estendida).
+              </p>
+            </footer>
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
