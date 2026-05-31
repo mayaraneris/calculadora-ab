@@ -9,20 +9,20 @@ Esta calculadora de arquivo único (Single-Page) resolve as duas pontas da rotin
 
 ## Funcionalidades
 
-* **Passo 1: Planejamento (Pré-teste)**
+* **Passo 1: planejamento (Pré-teste)**
   * Calcula o tamanho da amostra (Sample Size) por variante.
   * Estima os dias necessários para conclusão do teste baseado no tráfego diário.
   * Avalia se a sua meta de *lift* faz sentido e gera cenários alternativos automaticamente.
 
-* **Passo 3: Análise (Pós-teste)**
+* **Passo 3: análise (Pós-teste)**
   * Calcula a conversão de cada variante.
   * Aponta o vencedor com base em **Significância Estatística** (Z-test de duas proporções).
   * Exibe P-valor, Z-statistic e Lift relativo de forma fácil de entender.
 
-* **Integração com IA (Exportação de Contexto)**
+* **Integração com IA (exportação de contexto)**
   * Botões de "Copiar pra Claude / ChatGPT" que geram *prompts* estruturados automaticamente com os seus dados, prontos para você debater hipóteses, analisar riscos e documentar aprendizados com a IA.
 
-* **Educação Embutida**
+* **Educação embutida**
   * Traz explicações acessíveis sobre *Guard Rails*, *Peeking*, KPIs primários e os fundamentos de um bom teste de produto.
 
 ## Como rodar (Zero Setup)
